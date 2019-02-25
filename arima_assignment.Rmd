@@ -1,0 +1,224 @@
+---
+title: "ARIMA Assignment"
+author: "Cody Crunkilton"
+date: "March 8, 2018"
+output:
+  pdf_document:
+    latex_engine: pdflatex
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T)
+library(tseries)
+library(forecast)
+library(tidyverse)
+library(zoo)
+library(strucchange)
+library(fracdiff)
+```
+
+
+```{r include=FALSE, echo=FALSE}
+
+p <- read.csv("prolif.csv")
+
+p <- read.csv("prolif.csv") %>% 
+  mutate(date=rownames(p),
+         prolif=as.numeric(as.character(Category..All.categories))) %>% 
+  select(date,prolif) 
+
+p <- p %>% 
+  slice(-1) %>% 
+  mutate(date=as.yearmon(as.character(date)) %>% 
+           as.Date())
+ts <- ts(p$prolif)
+```
+
+
+I will look at Google Trends data on the term "nuclear proliferation" from 2004 to present. The data is organized on a scale from 0-100 where 0 is no interest and 100 is the greatest level of search interest expressed in the series. For reference, here is a plot of the time series:
+
+
+```{r echo=FALSE}
+ggplot(p,aes(date,prolif))+
+  geom_line()+
+  scale_x_date(date_breaks = "1 year")+
+  theme(axis.text.x=element_text(angle=60,hjust=1))+
+  labs(title="Search Interest in \"Nuclear Proliferation\"",y="Search Interest" )
+```
+Visually, this appears to be oscillating with gradually declining mean and variance. It seems like every summer there is a large decline in interest while the interest will later spike in winter. It also appears that nuclear proliferation has become decreasingly salient as time has passed.
+
+**Hypothesis**
+
+
+I expect there to be both AR and MA terms in the model, but I don't have any reason to expect to find a particular relationship. I also do not think the series would be stationary, as I believe that the mean interest of the public in nuclear proliferation has declined since the early 2000s. I would not expect there to be any structural breaks in the model, as I think that any events which have ocurred will eventually disappear and the series will converge (either via an AR or MA process). This is a very vague hypothesis, but I also don't have strong beliefs directing me towards a specific form of the model and recognize that much time series work is inductive, so I decide to proceed. The rest of this paper is organized in the order my thought process followed when addressing the question, so if you have concerns or comments in my approach to the problem please let me know!
+
+
+**Unit Root Tests and Stationarity**
+
+Here, I test for stationarity:
+
+```{r}
+## Tests for Stationarity
+
+adf.test(ts,k=0) #dickey-fuller test - significant - means stationary
+adf.test(ts) # ADF test - significant - means stationary
+kpss.test(ts) # significant - can reject null- it's not stationary
+```
+These results are interesting, as the ADF test suggests the series is stationary but the KPSS test does not. I try the ADF test again with a higher lag order (one year, in this case, as the data is reported monthly).
+
+
+```{r}
+adf.test(ts,k=12)
+```
+This suggests that there may be some seasonality in the data (the lag order could be one year). Regardless, I decide this series is not stationary and proceed, as visually inspecting it seems to support that conclusion.
+
+
+Next, I will find what p, d, and q are needed for the series. First, I examine ACF and PACF plots: 
+
+
+```{r}
+Acf(ts)
+Pacf(ts)
+```
+
+These seem to suggest that this is a complex series. The PACF plot suggests that there could be an AR1 process, but also could be an AR4 or AR5 process. 
+
+The ACF plot suggests that there is an MA component, though that may be driven by the AR component as they seem to move in patterns. 
+
+Next, I use the AIC to test a series of models:
+
+
+```{r}
+AIC(arima(ts,c(1,0,0))) # 1,0,0=1383
+AIC(arima(ts,c(2,0,0))) # 2,0,0=1380
+AIC(arima(ts,c(3,0,0))) # 3,0,0=1382
+AIC(arima(ts,c(0,0,1))) # 0,0,1=1407
+AIC(arima(ts,c(1,0,1))) # 0,0,1=1381
+AIC(arima(ts,c(4,0,0))) # 1363
+AIC(arima(ts,c(4,0,1))) # 1333
+AIC(arima(ts,c(4,0,4))) # 1324
+AIC(arima(ts,c(4,0,5))) # 1319
+AIC(arima(ts,c(4,1,5))) # 1308
+AIC(arima(ts,c(4,1,3))) # 1308
+AIC(arima(ts,c(4,1,2))) # 1325
+AIC(arima(ts,c(4,2,5))) # 1299
+AIC(arima(ts,c(4,4,5))) # 1369
+AIC(arima(ts,c(4,3,5))) # 1336
+AIC(arima(ts,c(5,2,5))) # 1301
+
+
+```
+After looking at these, it seems like the lowest AIC is produced by a (4,2,5) model, which means an AR term of 4, MA term of 5, and a d of 2. However, comparing AICs across different levels of d is not appropriate. Because of that, I now return to the tests for stationarity, using first-differenced data. 
+
+```{r}
+d1 <- diff(ts,differences=1)
+adf.test(d1,alternative="stationary")
+adf.test(d1,k=12,alternative="stationary")
+```
+This seems to suggest that differencing the data once is sufficient. I could also check if twice-differenced data is stationary, but I opt for parsimony keeping d at 1. This leaves me with the following ARIMA model having produced the best result:
+
+```{r}
+arima(ts,(c(4,1,5)))
+```
+Just looking at the results, this appears to have a problem as there are NA estimates for the ma4 and ma5 terms. I try again with a (4,1,3) and (4,1,2) model. 
+
+```{r}
+arima(ts,(c(4,1,3)))
+arima(ts,(c(4,1,2)))
+
+
+```
+The (4,1,3) model has lower AIC but also has estimates for the AR and MA terms greater than 1, which would suggest explosiveness which I strongly doubt is the case. I opt for the (4,1,2) model as a result. 
+
+
+Now I will look at the residuals for the model:
+
+```{r}
+test <- arima(ts,c(4,1,2))
+Acf(test$residuals)
+Pacf(test$residuals)
+```
+No residuals seem to stand out aside from a possible AR14 term, but I feel comfortable saying that this model fits well. 
+
+Note that this is also what the auto.arima() function found:
+```{r}
+auto.arima(ts)
+
+```
+
+
+
+**Testing for Fractional Integration**
+
+I check to see if the series is fractionally integrated, using the arfima() command, which uses the Haslett and Raftery algorithm to estimate d. 
+
+```{r}
+arfima(ts)
+
+```
+
+This is interesting, as now the model has an AR2 and MA1 term, which is less than the previous section found. The d term suggests that we have a fractionally integrated series with short and long memory, mean reversion, and finite variance. 
+
+
+
+**Testing for an Intervention Effect/Structural Break**
+
+I do not have a theoretical reason to expect a structural break in the series. But, I'll go ahead and check:
+
+
+```{r}
+bp <- breakpoints(ts~1)
+summary(bp)
+```
+This uses the Bai and Perron (2003) algorithm to estimate breaks in time series regressions. 
+
+```{r echo=FALSE}
+
+ggplot(p,aes(date,prolif))+
+  geom_line()+
+  geom_vline(aes(xintercept=as.numeric(as.Date("11/01/06", "%m/%d/%y")),color="blue"))+
+  geom_vline(aes(xintercept=as.numeric(as.Date("4/01/10", "%m/%d/%y")),color="blue"))+
+  scale_x_date(date_breaks = "1 year")+
+  theme(axis.text.x=element_text(angle=60,hjust=1))+
+  theme(legend.position = "none")+
+  labs(title="Search Interest in \"Nuclear Proliferation\"",y="Search Interest" )
+```
+
+I can see the argument for the break point in May 2010 as that was the NPT Review Conference, but I generally would not want to accept these points without a theoretical reason to anticipate the series would fundamentally change at those times. 
+
+
+Here I use the Chow test to see if the break point at the 2010 NPT Review Conference is significant:
+
+```{r}
+sctest(ts~1, type = "Chow", point = 76)
+
+?auto.arima
+```
+This looks like a good result, but the Chow test is only appropriate for when you know the structural break ahead of time, whereas I just ran it because that was what R (already) told me one of the breakpoints was, so this does not actually tell me that much.
+
+Finally, I estimate an ARIMA model including a dummy variable for every point after the May 2010 NPT Review Conference. I found the best model was an ARIMA(2,0,2) model. This suggests that after adding a dummy variable for May 2010 until present the series no longer needs to be differenced, but does have an ARMA(2,2) component. I find this puzzling - I don't understand why the series would become stationary after adding a dummy variable for May 2010 on. I really do not know what to make of that, except perhaps that people just began caring much less about proliferation after May 2010 and the series became stationary at a lower equilibrium.
+
+Because I was interested, I also split the data around the May 2010 date and estimated ARIMA models for both sets of data:
+
+```{r,echo=FALSE}
+
+p_early <- p %>% 
+  filter(date<(as.Date("4/01/10", "%m/%d/%y")))
+
+
+p_late <- p %>% 
+  filter(date>=(as.Date("4/01/10", "%m/%d/%y")))
+
+ts_early <- ts(p_early$prolif)
+ts_late <- ts(p_late$prolif)
+
+auto.arima(ts_early)
+auto.arima(ts_late)
+```
+
+This is interesting, as the best models have neither an AR nor MA component and just have a d of 1. Perhaps there was something in the 2010 NPT review conference that fundamentally changed the series and the more complex model I originally found is trying to do too much by explaining two fundamentally different series in one equation. 
+
+**Conclusions**
+
+It seems like an ARIMA(4,1,2) model best explains the series. If I opt for a fractionally integrated model, I would have AR2, MA2, and d=.44. I had no theoretical reason to expect a structural change in the series, but after testing for breakpoints it seems possible that interest in the term "nuclear proliferation" on Google fundamentally changed after the May 2010 NPT Review Conference. 
